@@ -5,10 +5,12 @@ setup(
     version='0.1.0',
     packages=find_packages(),
     install_requires=[
-        'openai',
         'click',
         'composio_core',
-        'composio_openai',
+        'composio_langchain',
+        'langchain',
+        'langchain_openai',
+        'langchain_community',
     ],
     entry_points={
         'console_scripts': [
