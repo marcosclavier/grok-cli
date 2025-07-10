@@ -7,7 +7,6 @@ from composio_langchain import ComposioToolSet, App
 
 class GrokAgent:
     def __init__(self, api_key, model="grok-4-0709", base_url="https://api.x.ai/v1"):
-        # Initialize LLM 
         self.llm = ChatOpenAI(
             api_key=api_key,
             model=model,
@@ -16,11 +15,9 @@ class GrokAgent:
             max_tokens=1000
         )
         
-        # Initialize Composio toolset
         self.composio_toolset = ComposioToolSet()
         self.tools = self.composio_toolset.get_tools(apps=[App.FILETOOL])
         
-        # Create prompt template
         prompt = ChatPromptTemplate.from_messages([
             ("system", "You are a helpful AI assistant with access to file tools. Use the tools when needed to help the user."),
             MessagesPlaceholder(variable_name="chat_history"),
@@ -28,19 +25,17 @@ class GrokAgent:
             MessagesPlaceholder(variable_name="agent_scratchpad"),
         ])
         
-        # Initialize memory for conversation history
         self.memory = ConversationBufferMemory(
             memory_key="chat_history",
             return_messages=True
         )
         
-        # Create agent
         self.agent = create_openai_functions_agent(self.llm, self.tools, prompt)
         self.agent_executor = AgentExecutor(
             agent=self.agent,
             tools=self.tools,
             memory=self.memory,
-            verbose=False,  # Disable verbose to prevent duplicate output
+            verbose=False,  
             max_iterations=10
         )
     
@@ -49,7 +44,7 @@ class GrokAgent:
         try:
             response = self.agent_executor.invoke({"input": user_message})
             output = response.get("output", "Sorry, I couldn't generate a response.")
-            print(output)  # Print clean, single response
+            print(output)  
             return output
         except Exception as e:
             if "rate_limit" in str(e).lower() or "429" in str(e):
