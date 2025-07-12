@@ -1,5 +1,7 @@
 import os
 import json
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning, module='langchain')
 from langchain_openai import ChatOpenAI
 from langchain.memory import ConversationBufferMemory
 from langchain_core.tools import tool
@@ -88,8 +90,7 @@ class GrokAgent:
         self.memory = ConversationBufferMemory(
             memory_key="chat_history",
             return_messages=True,
-            input_key="input",
-            output_key="output"
+            input_key="input"
         )
         
         # Create tool calling agent
