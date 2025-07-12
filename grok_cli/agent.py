@@ -1,52 +1,77 @@
+import os
 import json
 from langchain_openai import ChatOpenAI
 from langchain.memory import ConversationBufferMemory
-from composio_langchain import ComposioToolSet, App
+from langchain_core.tools import tool
+from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain.prompts import PromptTemplate
 
-# The prompt template is now manually defined with a very specific example.
-REACT_PROMPT_TEMPLATE = """
-Assistant is a large language model trained by Google.
+# --- The Definitive Monkey-Patch ---
+import openai
+original_create = openai.resources.chat.completions.Completions.create
+def patched_create(*args, **kwargs):
+    kwargs.pop("stop", None)
+    return original_create(*args, **kwargs)
+openai.resources.chat.completions.Completions.create = patched_create
+# --- End of the Definitive Monkey-Patch ---
 
-Assistant is designed to be able to assist with a wide range of tasks, from answering simple questions to providing in-depth explanations and discussions on a wide range of topics. As a language model, Assistant is able to generate human-like text in response to a wide range of prompts and questions, allowing it to engage in natural-sounding conversations and provide responses that are coherent and relevant to the topic at hand.
+# Custom file tools (replacing Composio's FILETOOL)
+@tool
+def list_files() -> str:
+    """List all files in the current working directory."""
+    try:
+        files = os.listdir(os.getcwd())
+        return json.dumps({"files": files})
+    except Exception as e:
+        return f"Error listing files: {str(e)}"
 
-Assistant is constantly learning and improving, and its capabilities are constantly evolving. It is able to process and understand large amounts of text, and can use this knowledge to provide accurate and informative responses to a wide range of questions. Additionally, Assistant is able to generate its own text, allowing it to engage in discussions and provide explanations and descriptions on a wide range of topics.
+@tool
+def read_file(file_path: str) -> str:
+    """Read the content of a file at the given path."""
+    try:
+        with open(file_path, 'r') as f:
+            content = f.read()
+        return json.dumps({"content": content})
+    except Exception as e:
+        return f"Error reading file '{file_path}': {str(e)}"
 
-Overall, Assistant is a powerful tool that can help with a wide range of tasks and provide valuable insights and information on a wide range of topics. Whether you need help with a specific question or just want to have a conversation about a particular topic, Assistant is here to assist.
+@tool
+def edit_file(file_path: str, old_text: str = "", new_text: str = "") -> str:
+    """Edit a file by replacing old_text with new_text. If old_text is empty, new_text is appended. If new_text is empty, old_text is deleted. Use relative path."""
+    try:
+        if not os.path.exists(file_path):
+            return f"Error: File '{file_path}' does not exist."
+        
+        with open(file_path, 'r') as f:
+            content = f.read()
 
-TOOLS:
-------
-Assistant has access to the following tools:
+        if old_text and new_text:
+            new_content = content.replace(old_text, new_text)
+        elif old_text and not new_text:
+            new_content = content.replace(old_text, "")
+        elif not old_text and new_text:
+            new_content = content + new_text
+        else:
+            return "Error: Must provide either old_text or new_text (or both)."
 
-{tools}
+        with open(file_path, 'w') as f:
+            f.write(new_content)
+            
+        return "File edited successfully."
+    except Exception as e:
+        return f"Error editing file '{file_path}': {str(e)} (Check permissions or path)."
 
-To use a tool, please use the following format. For example, to read a file named 'example.txt', you would format your response *exactly* like this:
+from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 
-```json
-{{
-    "action": "FILETOOL_OPEN_FILE",
-    "action_input": {{
-        "file_path": "example.txt"
-    }}
-}}
-```
-
-When you have a response to say to the Human, or if you do not need to use a tool, you MUST use the format:
-
-```json
-{{
-    "action": "Final Answer",
-    "action_input": "your response to the user"
-}}
-```
-
-Begin!
-
-Previous conversation history:
-{chat_history}
-
-New input: {input}
-Assistant:
-"""
+# Tool calling prompt (simpler, no ReAct needed)
+prompt = ChatPromptTemplate.from_messages(
+    [
+        ("system", "You are a helpful assistant with access to tools for file operations. Always use the appropriate tools to complete the user's request. Confirm the update in your final response."),
+        MessagesPlaceholder("chat_history", optional=True),
+        ("human", "{input}"),
+        MessagesPlaceholder("agent_scratchpad"),
+    ]
+)
 
 class GrokAgent:
     def __init__(self, api_key, model="grok-4-0709", base_url="https://api.x.ai/v1"):
@@ -54,57 +79,39 @@ class GrokAgent:
             api_key=api_key,
             model=model,
             base_url=base_url,
-            temperature=0.7,
+            temperature=0.0,
             max_tokens=1000,
         )
         
-        self.composio_toolset = ComposioToolSet()
-        self.tools = self.composio_toolset.get_tools(apps=[App.FILETOOL])
-        self.tool_names = ", ".join([tool.name for tool in self.tools])
+        self.tools = [list_files, read_file, edit_file]
         
         self.memory = ConversationBufferMemory(
             memory_key="chat_history",
-            return_messages=True
+            return_messages=True,
+            input_key="input",
+            output_key="output"
+        )
+        
+        # Create tool calling agent
+        self.agent = create_tool_calling_agent(
+            llm=self.llm,
+            tools=self.tools,
+            prompt=prompt
+        )
+        
+        self.executor = AgentExecutor(
+            agent=self.agent,
+            tools=self.tools,
+            memory=self.memory,
+            max_iterations=15,  # Prevent hangs
+            handle_parsing_errors=True,
+            verbose=True,  # Set to False in production; helpful for debugging
+            early_stopping_method="generate"
         )
 
     def chat(self, user_message):
-        prompt = REACT_PROMPT_TEMPLATE.format(
-            tools=self.tool_names,
-            chat_history=self.memory.chat_memory.messages,
-            input=user_message
-        )
-
         try:
-            llm_response = self.llm.invoke(prompt)
-            response_text = llm_response.content
-
-            if '```json' in response_text:
-                json_str = response_text.split('```json')[1].split('```')[0].strip()
-                parsed_json = json.loads(json_str)
-                
-                action = parsed_json.get("action")
-                action_input = parsed_json.get("action_input")
-
-                if action == "Final Answer":
-                    print(action_input)
-                    self.memory.save_context({"input": user_message}, {"output": action_input})
-                    return action_input
-
-                tool_to_use = next((t for t in self.tools if t.name == action), None)
-                if tool_to_use:
-                    tool_output = tool_to_use.invoke(action_input)
-                    self.memory.save_context({"input": user_message}, {"output": str(tool_output)})
-                    return tool_output
-                else:
-                    final_response = f"Error: Tool '{action}' not found."
-                    print(final_response)
-                    return final_response
-            else:
-                print(response_text)
-                self.memory.save_context({"input": user_message}, {"output": response_text})
-                return response_text
-
+            response = self.executor.invoke({"input": user_message})
+            return response["output"]
         except Exception as e:
-            error_msg = f"An error occurred: {str(e)}"
-            print(error_msg)
-            return error_msg
+            return f"An error occurred: {str(e)}. Check file permissions or path."

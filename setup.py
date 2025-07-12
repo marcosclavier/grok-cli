@@ -6,8 +6,7 @@ setup(
     packages=find_packages(),
     install_requires=[
         'click',
-        'composio_core',
-        'composio_langchain',
+        'langchain_core',
         'langchain',
         'langchain_openai',
         'langchain_community',

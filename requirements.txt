@@ -1,6 +1,5 @@
 click==8.1.7
-composio_core
-composio_langchain
 langchain
 langchain_openai
 langchain_community
+langchain_core
