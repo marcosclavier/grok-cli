@@ -93,32 +93,8 @@ class GrokAgent:
                 tool_to_use = next((t for t in self.tools if t.name == action), None)
                 if tool_to_use:
                     tool_output = tool_to_use.invoke(action_input)
-
-                    # Instead of printing the raw dict, parse it for a clean response.
-                    if isinstance(tool_output, dict) and tool_output.get("successful"):
-                        data = tool_output.get("data", {})
-                        message = data.get("message", "Tool executed successfully.")
-                        lines = data.get("lines")
-                        
-                        clean_output = message
-                        if lines:
-                            clean_output += f"\n{lines}"
-                        
-                        print(clean_output)
-                        self.memory.save_context({"input": user_message}, {"output": clean_output})
-                        return clean_output
-                    elif isinstance(tool_output, dict):
-                        error_message = tool_output.get("error", "An unknown error occurred.")
-                        clean_output = f"Error executing tool: {error_message}"
-                        print(clean_output)
-                        self.memory.save_context({"input": user_message}, {"output": clean_output})
-                        return clean_output
-                    else:
-                        # Fallback for non-dict tool outputs
-                        clean_output = str(tool_output)
-                        print(clean_output)
-                        self.memory.save_context({"input": user_message}, {"output": clean_output})
-                        return clean_output
+                    self.memory.save_context({"input": user_message}, {"output": str(tool_output)})
+                    return tool_output
                 else:
                     final_response = f"Error: Tool '{action}' not found."
                     print(final_response)
