@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import json
+import re
 
 try:
     import termios
@@ -26,6 +27,10 @@ def _getch():
 def custom_prompt():
     """Custom input prompt that handles keyboard shortcuts like ctrl+o and ctrl+t."""
     line = ""
+    cycling = False
+    cycle_matches = []
+    cycle_index = -1
+    last_partial = ""
     sys.stdout.write("  > ")
     sys.stdout.flush()
     while True:
@@ -38,14 +43,69 @@ def custom_prompt():
                 line = line[:-1]
                 sys.stdout.write('\b \b')
                 sys.stdout.flush()
-        elif ch == '\x0f':  # Ctrl+O (ASCII 15)
-            print("\nNo errors to display.")  # Placeholder for error details
+        elif ch == '\x0f':  # Ctrl+O
+            print("\nNo errors to display.")
             sys.stdout.write("  > " + line)
             sys.stdout.flush()
-        elif ch == '\x14':  # Ctrl+T (ASCII 20)
-            print("\nMCP Servers:\n- Server 1\n- Server 2\n- Server 3\n- Server 4\n- Server 5")  # Placeholder for servers view
+        elif ch == '\x14':  # Ctrl+T
+            print("\nMCP Servers:\n- Server 1\n- Server 2\n- Server 3\n- Server 4\n- Server 5")
             sys.stdout.write("  > " + line)
             sys.stdout.flush()
+        elif ch == '\t':  # Tab for autocomplete
+            pos = line.rfind('@')
+            if pos == -1 or (line.rfind(' ') > pos):
+                cycling = False
+                continue
+            partial_path = line[pos+1:]
+            if not partial_path:
+                cycling = False
+                continue
+            dirname, basename = os.path.split(partial_path)
+            if not dirname:
+                dirname = '.'
+            full_dir = os.path.expanduser(dirname) if dirname.startswith('~') else dirname
+            try:
+                files = os.listdir(full_dir)
+                matches = [f for f in files if f.startswith(basename)]
+                if not matches:
+                    cycling = False
+                    continue
+                sorted_matches = sorted(matches)
+                common = os.path.commonprefix(sorted_matches)
+                completion = common[len(basename):]
+                if completion:
+                    line += completion
+                    sys.stdout.write(completion)
+                    sys.stdout.flush()
+                    cycling = True
+                    cycle_matches = sorted_matches
+                    cycle_index = -1
+                    last_partial = partial_path + completion
+                else:
+                    if not cycling or partial_path != last_partial:
+                        cycling = True
+                        cycle_matches = sorted_matches
+                        cycle_index = -1
+                        last_partial = partial_path
+                    # Cycle to next
+                    cycle_index = (cycle_index + 1) % len(cycle_matches)
+                    chosen = cycle_matches[cycle_index]
+                    new_partial = os.path.join(dirname, chosen)
+                    if os.path.isdir(os.path.join(full_dir, chosen)):
+                        new_partial += '/'
+                    # Erase current partial
+                    current_len = len(partial_path)
+                    line = line[:-current_len]
+                    sys.stdout.write('\b \b' * current_len)
+                    # Add new
+                    line += new_partial
+                    sys.stdout.write(new_partial)
+                    sys.stdout.flush()
+                    # Update last
+                    last_partial = new_partial
+            except:
+                cycling = False
+                continue
         else:
             line += ch
             sys.stdout.write(ch)
@@ -141,8 +201,7 @@ def display_agent_response(text):
             click.echo("  " + click.style("╭" + "─" * 50 + "╮", dim=True))
             click.echo("  " + "│ " + click.style("📄 File Content", fg='green'))
             click.echo("  " + "│ ")
-            for line in response_json["content"].split('\n'):
-                click.echo("  " + "│ " + click.style(f"  {line}", fg='yellow'))
+            for line in response_json["content"].split('\n'):                click.echo("  " + "│ " + click.style(f"  {line}", fg='yellow'))
             click.echo("  " + click.style("╰" + "─" * 50 + "╯", dim=True))
             click.echo()
         elif "status" in response_json and response_json["status"] == "success":
@@ -265,11 +324,34 @@ def main(api_key, dev, prompt):
                 
                 display_user_prompt(user_input)
                 
+                # Preprocess for @ attachments
+                enhanced_message = user_input
+                attachments = ""
+                matches = re.findall(r'@(\S+)', user_input)
+                for path in set(matches):
+                    full_path = os.path.expanduser(path)
+                    if os.path.isfile(full_path):
+                        try:
+                            with open(full_path, 'r') as f:
+                                content = f.read()
+                            enhanced_message = enhanced_message.replace(f'@{path}', f'[attached file: {path}]')
+                            attachments += f"\n\nAttached file '{path}':\n```\n{content}\n```"
+                        except Exception as e:
+                            enhanced_message = enhanced_message.replace(f'@{path}', f'[error attaching {path}: {str(e)}]')
+                    elif os.path.isdir(full_path):
+                        try:
+                            files = os.listdir(full_path)
+                            enhanced_message = enhanced_message.replace(f'@{path}', f'[attached dir: {path}]')
+                            attachments += f"\n\nAttached directory '{path}' listing:\n" + "\n".join(f" - {f}" for f in files)
+                        except Exception as e:
+                            enhanced_message = enhanced_message.replace(f'@{path}', f'[error attaching {path}: {str(e)}]')
+                enhanced_message += attachments
+                
                 if user_input.lower() in ['exit', 'quit']:
                     click.echo("Goodbye!")
                     break
                 
-                response = agent.chat(user_input)
+                response = agent.chat(enhanced_message)
                 display_agent_response(response) # Format and display the response
                 click.echo()
                 print_status_bar(agent)
