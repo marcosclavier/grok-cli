@@ -183,7 +183,7 @@ class GrokAgent:
             model=model,
             base_url=base_url,
             temperature=0.0,
-            max_tokens=4096,  # Reduced for efficiency
+            max_tokens=8192,  # Increased for better context handling
         )
         self.model = model  # Add this
         
