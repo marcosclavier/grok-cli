@@ -2,12 +2,15 @@ import os
 import json
 import warnings
 warnings.filterwarnings("ignore", category=DeprecationWarning, module='langchain')
+import tiktoken
 from langchain_openai import ChatOpenAI
 from langchain.memory import ConversationBufferMemory, ConversationSummaryBufferMemory
 from langchain_core.tools import tool
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.prompts import PromptTemplate
 from langchain_community.callbacks import get_openai_callback
+from langchain_core.messages import BaseMessage
+from typing import List
 
 # --- The Definitive Monkey-Patch ---
 import openai
@@ -114,49 +117,59 @@ def edit_file(file_path: str, old_text: str = "", new_text: str = "") -> str:
     except Exception as e:
         return json.dumps({"error": f"Error editing file '{file_path}': {str(e)} (Check permissions or path)."})
 
+# Custom token counter
+def get_grok_num_tokens(messages, model="grok-4-0709"):
+    encoding = tiktoken.encoding_for_model("gpt-4")  # Proxy
+    num_tokens = 0
+    for message in messages:
+        num_tokens += 4  # Overhead
+        for key, value in message.items():
+            num_tokens += len(encoding.encode(value))
+            if key == "name":
+                num_tokens += -1
+    num_tokens += 2  # Response priming
+    return num_tokens
+
+# Custom LLM subclass
+class CustomChatOpenAI(ChatOpenAI):
+    def get_num_tokens_from_messages(self, messages: List[BaseMessage]) -> int:
+        converted_messages = [{"role": msg.type, "content": msg.content if isinstance(msg.content, str) else str(msg.content)} for msg in messages]
+        return get_grok_num_tokens(converted_messages)
+
 from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
 
-# Tool calling prompt (simpler, no ReAct needed)
+# Tool calling prompt (trimmed for efficiency)
 prompt = ChatPromptTemplate.from_messages(
     [
         ("system", """You are an autonomous AI assistant specializing in software engineering tasks.
 Your primary goal is to help the user by safely and efficiently modifying files and executing commands.
 
 **Core Mandates:**
-- **Understand:** Thoroughly analyze the user's request and the current project context. Use file reading and listing tools extensively to gather information.
-- **Plan:** Formulate a clear, step-by-step plan to address the user's request. Share this plan with the user if it's complex or involves significant changes.
-- **Implement:** Use file modification tools (like `edit_file`) to apply changes.
-- **Verify:** After making changes, always use `read_file` to confirm the edit was applied correctly. If not, retry with adjusted parameters.
-- **Confirm & Persist:** After performing an action, confirm the update in your final response. If the task is incomplete (e.g., verification fails), do not end—continue with corrective actions. Persist until fully resolved, especially for small files where mismatches might occur due to whitespace.
-- **Error Handling:** If a tool call fails, analyze the error, explain it, and retry. For `edit_file` failures like 'old_text not found', re-read the file, adjust `old_text` (include exact whitespace/line endings), and try again.
+- Analyze request and context using tools.
+- Plan step-by-step; share for complex changes.
+- Implement with `edit_file`.
+- Verify with `read_file`; retry if needed.
+- Persist until resolved; handle errors by retrying.
+- Be concise; focus on results.
 
 **Tool Usage:**
-- Always use the provided tools (`list_files`, `read_file`, `edit_file`) when interacting with the filesystem.
-- Provide precise arguments to tools. For `edit_file`, ensure `old_text` includes surrounding context for accuracy.
+- Use `list_files`, `read_file`, `edit_file` for filesystem.
+- Precise args; `old_text` with context.
 
-**File Modification Workflow:**
-When asked to modify a file:
-1. **Read the file:** Use the `read_file` tool to get the current content of the target file.
-2. **Identify `old_text` and `new_text`:** Carefully determine the exact `old_text` (the string to be replaced) and the `new_text` (its replacement). Ensure `old_text` is precise, including whitespace, newlines, and surrounding context, to avoid unintended changes. Normalize for common issues like line endings.
-3. **Call `edit_file`:** Use the `edit_file` tool with the `file_path`, `old_text`, and `new_text` arguments.
-4. **Verify:** Always use `read_file` again to confirm the changes. If incorrect, analyze and retry.
+**Modification Workflow:**
+1. Read file.
+2. Identify exact `old_text`/`new_text`.
+3. Edit.
+4. Verify; retry if incorrect.
 
-**Debugging and Self-Correction:**
-- If a tool returns an error, analyze the error message carefully.
-- If `edit_file` fails because `old_text` was not found or found multiple times, re-read the file to get the latest content and adjust `old_text` to be more precise (e.g., full line).
-- If verification shows the edit didn't take effect as expected, retry the entire workflow.
-- Do not finish prematurely; if unresolved, plan the next step instead of finalizing.
-
-**Communication:**
-- Be concise and direct.
-- Focus on actions taken and results.
-- Do not engage in conversational filler.
+**Debugging:**
+- Analyze errors; adjust and retry.
+- Do not finish prematurely.
 
 **Current Context:**
-- You are operating within a command-line interface.
-- You have access to file system tools.
+- CLI with filesystem tools.
 
-Now, proceed with the user's request."""),
+Proceed with request."""),
         MessagesPlaceholder("chat_history", optional=True),
         ("human", "{input}"),
         MessagesPlaceholder("agent_scratchpad"),
@@ -164,26 +177,28 @@ Now, proceed with the user's request."""),
 )
 
 class GrokAgent:
-    def __init__(self, api_key, model="grok-4-0709", base_url="https://api.x.ai/v1", summarize_memory=False):
-        self.llm = ChatOpenAI(
+    def __init__(self, api_key, model="grok-4-0709", base_url="https://api.x.ai/v1", summarize_memory=True):  # Default to True
+        self.llm = CustomChatOpenAI(
             api_key=api_key,
             model=model,
             base_url=base_url,
             temperature=0.0,
-            max_tokens=128000,  # Increased for better context handling
+            max_tokens=4096,  # Reduced for efficiency
         )
+        self.model = model  # Add this
         
         self.tools = [list_files, read_file, edit_file]
         
-        self.context_window = 128000 if "grok-4" in model else 16384  # Model-specific context window
+        self.context_window = 256000 if "grok-4" in model else 16384  # Accurate for Grok-4
         
         if summarize_memory:
             self.memory = ConversationSummaryBufferMemory(
-                llm=self.llm,
+                llm=self.llm,  # Use subclass, no bind
                 memory_key="chat_history",
                 return_messages=True,
                 input_key="input",
-                max_token_limit=2000  # Summarize if history exceeds this
+                output_key="output",  # Explicit
+                max_token_limit=2000
             )
         else:
             self.memory = ConversationBufferMemory(
@@ -203,11 +218,11 @@ class GrokAgent:
             agent=self.agent,
             tools=self.tools,
             memory=self.memory,
-            max_iterations=25,  # Increased to allow more steps
+            max_iterations=25,
             handle_parsing_errors="Check your output and try again.",
-            verbose=True,  # Set to False in production; helpful for debugging
-            early_stopping_method="force",  # Force agent to continue until max_iterations or explicit stop
-            return_intermediate_steps=True  # For debugging intermediate tool calls
+            verbose=False,  # Disabled for production efficiency
+            early_stopping_method="force",
+            return_intermediate_steps=True
         )
 
         self.last_token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
@@ -226,17 +241,17 @@ class GrokAgent:
                 
                 error_count = 0
                 for step in response.get("intermediate_steps", []):
-                    tool_output = step[1]  # AgentAction, tool output
+                    tool_output = step[1]
                     try:
                         output_dict = json.loads(tool_output)
                         if "error" in output_dict:
                             error_count += 1
                     except json.JSONDecodeError:
-                        pass  # Non-JSON output, skip
+                        pass
                 
                 self.last_error_count = error_count
                 
             return response["output"]
         except Exception as e:
-            self.last_error_count += 1  # Count top-level exceptions
+            self.last_error_count += 1
             return f"An error occurred: {str(e)}. Check file permissions or path."

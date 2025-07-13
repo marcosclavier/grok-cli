@@ -82,12 +82,13 @@ def print_status_bar(agent=None):
     sandbox_info = "no sandbox (see /docs)"
     
     # Context left calculation
-    if agent and agent.last_token_usage.get("total_tokens", 0) > 0:
-        total_used = agent.last_token_usage["total_tokens"]
-        percent_left = max(0, (agent.context_window - total_used) / agent.context_window * 100)
-        context_left = f"grok-4 ({int(percent_left)}% context left)"
+    model_name = agent.model if agent else "grok-4"
+    if agent and agent.last_token_usage.get("prompt_tokens", 0) > 0:
+        prompt_used = agent.last_token_usage["prompt_tokens"]
+        percent_left = max(0, (agent.context_window - prompt_used) / agent.context_window * 100)
+        context_left = f"{model_name} ({int(percent_left)}% context left)"
     else:
-        context_left = "grok-4 (100% context left)"  # Initial or fallback
+        context_left = f"{model_name} (100% context left)"  # Initial or fallback
     
     model_info = click.style(context_left, fg="cyan")
     
