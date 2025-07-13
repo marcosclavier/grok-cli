@@ -6,6 +6,7 @@ A command-line interface (CLI) tool designed to interact with xAI's Grok model v
 - **Interactive Chat:** Engage in real-time conversations with the Grok AI.
 - **Conversation History:** The CLI maintains conversation history, allowing for context-aware interactions.
 - **Easy Setup:** Quick and straightforward installation and configuration.
+- **Agentic Capabilities:** The Grok AI possesses agentic capabilities, enabling it to use tools for performing various tasks such as file operations directly from the conversation.
 
 ## Setup
 1. **Obtain API Key:** Get your API key from the official xAI API portal: `https://x.ai/api`.
