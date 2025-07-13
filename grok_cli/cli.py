@@ -260,8 +260,8 @@ def main(api_key, dev, prompt):
             try:
                 user_input = custom_prompt()
                 
-                os.system('clear')
-                print_grok_art()
+                # os.system('clear')  # Commented out to prevent clearing terminal history
+                # print_grok_art()  # Commented out to prevent reloading ASCII art
                 
                 display_user_prompt(user_input)
                 
